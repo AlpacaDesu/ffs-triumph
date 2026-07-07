@@ -1,6 +1,7 @@
 """Authenticated client for the Triumph Technical Information documents API."""
 
 import json
+import random
 import sys
 import time
 from datetime import datetime, timezone
@@ -13,6 +14,12 @@ import requests
 from .config import API_BASE, ManualConfig
 
 REQUEST_DELAY = 0.15  # seconds, polite pause between network requests
+# --- Anti-blocking throttle for bulk content fetches -----------------------
+# The target site blocks accounts that fetch many topics in quick succession.
+# These bounds define the randomized delay (seconds) BETWEEN consecutive topic/
+# image fetches.  The first fetch is NOT delayed.
+MIN_FETCH_DELAY = 30.0   # minimum seconds between content fetches
+MAX_FETCH_DELAY = 100.0  # maximum seconds between content fetches
 
 
 class LoginError(RuntimeError):
@@ -54,7 +61,9 @@ class TriumphClient:
 
     def __init__(self, email: str, password: str, *, config: ManualConfig | None = None,
                  cache_dir: Path = Path(".cache"), verbose: int = 0,
-                 use_cache: bool = True, api_base: str = API_BASE):
+                 use_cache: bool = True, api_base: str = API_BASE,
+                 min_fetch_delay: float = MIN_FETCH_DELAY,
+                 max_fetch_delay: float = MAX_FETCH_DELAY):
         self.verbose = verbose
         self.use_cache = use_cache
         self.api_base = api_base
@@ -65,6 +74,14 @@ class TriumphClient:
         self.topic_cache.mkdir(parents=True, exist_ok=True)
         self.image_cache.mkdir(parents=True, exist_ok=True)
 
+        # Anti-blocking throttle state: randomized delay between bulk fetches.
+        self.min_fetch_delay = min_fetch_delay
+        self.max_fetch_delay = max_fetch_delay
+        # Guard against swapped bounds (e.g. --min-delay 100 --max-delay 30)
+        if self.min_fetch_delay > self.max_fetch_delay:
+            self.min_fetch_delay, self.max_fetch_delay = self.max_fetch_delay, self.min_fetch_delay
+        self._last_content_fetch: float | None = None  # monotonic timestamp
+
         self.session = requests.Session()
         self._auth = None
         self._root = None
@@ -74,6 +91,26 @@ class TriumphClient:
     def log(self, level, *args):
         if self.verbose >= level:
             print(*args, file=sys.stderr)
+
+    def _throttle(self):
+        """Sleep a randomized interval between bulk content fetches to avoid blocking.
+
+        The FIRST fetch is never delayed (nothing to space from). Subsequent
+        fetches wait so that the gap since the last fetch is at least a random
+        value in [min_fetch_delay, max_fetch_delay].
+        """
+        now = time.monotonic()
+        if self._last_content_fetch is None:
+            # First content fetch — no delay.
+            self._last_content_fetch = now
+            return
+        target_gap = random.uniform(self.min_fetch_delay, self.max_fetch_delay)
+        elapsed = now - self._last_content_fetch
+        remaining = target_gap - elapsed
+        if remaining > 0:
+            self.log(1, f"  throttle: sleeping {remaining:.1f}s (anti-blocking)")
+            time.sleep(remaining)
+        self._last_content_fetch = time.monotonic()
 
     def _login(self, email, password):
         resp = self.session.post(
@@ -230,6 +267,9 @@ class TriumphClient:
         if self.use_cache and cache_file.exists():
             return json.loads(cache_file.read_text())
 
+        # Throttle network fetches to avoid account blocking.
+        self._throttle()
+
         url = (f"{self.api_base}/documents/{cfg.root_id}/{topic_id}"
                f"?{urlencode(cfg.product_context)}")
         resp = self._get_with_backoff_retry(url)
@@ -247,6 +287,9 @@ class TriumphClient:
             data = cache_file.read_bytes()
             self._image_mem[href] = data
             return data
+
+        # Throttle network fetches to avoid account blocking.
+        self._throttle()
 
         cfg = self._ctx()
         url = f"{self.api_base}/documents/{cfg.root_id}/images/{href}"
