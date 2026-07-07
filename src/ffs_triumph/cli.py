@@ -8,7 +8,7 @@ from pathlib import Path
 import requests
 
 from . import __version__
-from .client import LoginError, TriumphClient
+from .client import LoginError, TriumphClient, MIN_FETCH_DELAY, MAX_FETCH_DELAY
 from .config import (
     API_BASE,
     DEFAULT_DOC_TYPE,
@@ -87,6 +87,8 @@ def make_client(args, cfg_file) -> TriumphClient:
             verbose=args.verbose,
             use_cache=not args.no_cache,
             api_base=args.api_base,
+            min_fetch_delay=args.min_delay if args.min_delay is not None else MIN_FETCH_DELAY,
+            max_fetch_delay=args.max_delay if args.max_delay is not None else MAX_FETCH_DELAY,
         )
     except LoginError as err:
         sys.exit(f"ERROR: {err}")
