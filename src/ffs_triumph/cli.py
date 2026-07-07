@@ -329,6 +329,10 @@ def _add_common(sp):
                     help="Ignore cached topics/images (still writes cache)")
     sp.add_argument("--no-save", action="store_true",
                     help="Don't offer to save settings to a config file")
+    sp.add_argument("--min-delay", type=float, default=None,
+                    help="Minimum seconds between content fetches (default: 30)")
+    sp.add_argument("--max-delay", type=float, default=None,
+                    help="Maximum seconds between content fetches (default: 100)")
     sp.add_argument("--verbose", "-v", action="count", default=0)
 
 
